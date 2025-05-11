@@ -1,0 +1,864 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Cotizador de Aluminio - AJM Marcos</title>
+    <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.development.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/javascript">
+        const { jsPDF } = window.jspdf;
+        const { createRoot } = ReactDOM;
+
+        // Imagen Base64 de prueba (ventana genérica, comprimida)
+        // Para la imagen real:
+        // 1. Descarga desde: https://http2.mlstatic.com/D_NQ_NP_626634-MLC69805403504_062023-O-ventana-termopanel-templado-aluminio-termico-y-121x100-cm.webp
+        // 2. Convierte a Base64 en https://www.base64-image.de/
+        // 3. Reemplaza aquí
+        const windowImage = 'data:image/webp;base64,UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAwA0JaQAA3AA/vv9AAA=';
+
+        function App() {
+            const [nombre, setNombre] = React.useState('');
+            const [tipoAluminio, setTipoAluminio] = React.useState('');
+            const [tipoVidrio, setTipoVidrio] = React.useState('');
+            const [items, setItems] = React.useState([{ id: Date.now(), tipoTrabajo: '', ancho: '', alto: '', cantidad: '1' }]);
+            const [cotizacion, setCotizacion] = React.useState(null);
+            const [pdfUrl, setPdfUrl] = React.useState(null);
+            const [preciosBase, setPreciosBase] = React.useState({
+                ventana2: 1750,      // Precio por m²
+                ventana3: 2300,      // Precio por m²
+                canceleriaFija2: 1400, // Precio por m²
+                canceleriaFija3: 1800, // Precio por m²
+                puertaLigera: 3500,  // Precio por pieza
+                puertaReforzada: 4500, // Precio por pieza
+                cancelBano: 2850     // Precio por m²
+            });
+            const [editandoPrecios, setEditandoPrecios] = React.useState(false);
+
+            const factoresAluminio = {
+                natural: 1.0,
+                duranodizado: 1.0,
+                blanco: 1.0,
+                aluminioPulido: 1.2,
+                champagne: 1.25,
+                ninguno: 1.0
+            };
+
+            const factoresVidrio = {
+                claro: 1.0,
+                filtrasol: 1.1,
+                tinteVerde: 1.15,
+                reflecta: 1.2,
+                ninguno: 1.0
+            };
+
+            const actualizarPrecios = () => {
+                const nuevosPrecios = {
+                    ventana2: parseFloat(document.getElementById('precioVentana2').value) || preciosBase.ventana2,
+                    ventana3: parseFloat(document.getElementById('precioVentana3').value) || preciosBase.ventana3,
+                    canceleriaFija2: parseFloat(document.getElementById('precioCanceleriaFija2').value) || preciosBase.canceleriaFija2,
+                    canceleriaFija3: parseFloat(document.getElementById('precioCanceleriaFija3').value) || preciosBase.canceleriaFija3,
+                    puertaLigera: parseFloat(document.getElementById('precioPuertaLigera').value) || preciosBase.puertaLigera,
+                    puertaReforzada: parseFloat(document.getElementById('precioPuertaReforzada').value) || preciosBase.puertaReforzada,
+                    cancelBano: parseFloat(document.getElementById('precioCancelBano').value) || preciosBase.cancelBano
+                };
+                setPreciosBase(nuevosPrecios);
+                setEditandoPrecios(false);
+            };
+
+            const agregarItem = () => {
+                setItems([...items, { id: Date.now(), tipoTrabajo: '', ancho: '', alto: '', cantidad: '1' }]);
+            };
+
+            const eliminarItem = (id) => {
+                if (items.length > 1) {
+                    setItems(items.filter(item => item.id !== id));
+                }
+            };
+
+            const actualizarItem = (id, campo, valor) => {
+                setItems(items.map(item => 
+                    item.id === id ? { ...item, [campo]: valor } : item
+                ));
+            };
+
+            const calcularCotizacion = () => {
+                console.log('Iniciando calcularCotizacion...');
+                if (!nombre || !tipoAluminio || !tipoVidrio) {
+                    setCotizacion({ error: 'Por favor, complete los campos de nombre, tipo de aluminio y tipo de vidrio.' });
+                    setPdfUrl(null);
+                    return;
+                }
+
+                if (items.length === 0) {
+                    setCotizacion({ error: 'Por favor, agregue al menos un ítem.' });
+                    setPdfUrl(null);
+                    return;
+                }
+
+                const itemsValidos = items.map(item => {
+                    const esVentana = item.tipoTrabajo === 'ventana2' || item.tipoTrabajo === 'ventana3' || item.tipoTrabajo === 'canceleriaFija2' || item.tipoTrabajo === 'canceleriaFija3' || item.tipoTrabajo === 'cancelBano';
+                    const esPuerta = item.tipoTrabajo === 'puertaLigera' || item.tipoTrabajo === 'puertaReforzada';
+                    const anchoNum = parseFloat(item.ancho) || 0;
+                    const altoNum = parseFloat(item.alto) || 0;
+                    const cantidadNum = parseFloat(item.cantidad) || 1;
+
+                    if (!item.tipoTrabajo) {
+                        return { error: 'Seleccione un tipo de trabajo para todos los ítems.' };
+                    }
+                    if (esVentana && (anchoNum <= 0 || altoNum <= 0)) {
+                        return { error: `Ingrese medidas válidas (ancho y alto) para ${item.tipoTrabajo}.` };
+                    }
+                    if (esPuerta && cantidadNum <= 0) {
+                        return { error: `Ingrese una cantidad válida para ${item.tipoTrabajo}.` };
+                    }
+
+                    const descripcion = item.tipoTrabajo === 'ventana2' ? 'Ventana de 2 pulgadas' :
+                                      item.tipoTrabajo === 'ventana3' ? 'Ventana de 3 pulgadas' :
+                                      item.tipoTrabajo === 'canceleriaFija2' ? 'Cancelería Fija de 2 pulgadas' :
+                                      item.tipoTrabajo === 'canceleriaFija3' ? 'Cancelería Fija de 3 pulgadas' :
+                                      item.tipoTrabajo === 'puertaLigera' ? 'Puerta Ligera' :
+                                      item.tipoTrabajo === 'puertaReforzada' ? 'Puerta Reforzada' : 'Cancel de Baño';
+                    const unidad = esPuerta ? 'piezas' : 'm²';
+                    const precioBase = preciosBase[item.tipoTrabajo];
+                    const factorAluminio = factoresAluminio[tipoAluminio];
+                    const factorVidrio = factoresVidrio[tipoVidrio];
+                    const precioUnitario = precioBase * factorAluminio * factorVidrio;
+
+                    let metrosCuadrados = null;
+                    let precioItem = 0;
+                    if (esVentana) {
+                        metrosCuadrados = anchoNum * altoNum;
+                        precioItem = precioUnitario * metrosCuadrados * cantidadNum;
+                    } else {
+                        precioItem = precioUnitario * cantidadNum;
+                    }
+
+                    return {
+                        tipoTrabajo: item.tipoTrabajo,
+                        descripcion,
+                        ancho: anchoNum,
+                        alto: altoNum,
+                        cantidad: cantidadNum,
+                        unidad,
+                        precioUnitario,
+                        precioItem,
+                        metrosCuadrados,
+                        medidas: anchoNum > 0 && altoNum > 0 ? { ancho: anchoNum, alto: altoNum } : null
+                    };
+                });
+
+                const error = itemsValidos.find(item => item.error);
+                if (error) {
+                    setCotizacion({ error: error.error });
+                    setPdfUrl(null);
+                    return;
+                }
+
+                const precioTotal = itemsValidos.reduce((sum, item) => sum + item.precioItem, 0);
+
+                const descripcionAluminio = tipoAluminio === 'natural' ? 'Natural' :
+                                          tipoAluminio === 'duranodizado' ? 'Duranodizado' :
+                                          tipoAluminio === 'blanco' ? 'Blanco' :
+                                          tipoAluminio === 'aluminioPulido' ? 'Aluminio Pulido' :
+                                          tipoAluminio === 'champagne' ? 'Champagne' : 'Ninguno';
+
+                const descripcionVidrio = tipoVidrio === 'claro' ? 'Claro' :
+                                         tipoVidrio === 'filtrasol' ? 'Filtrasol' :
+                                         tipoVidrio === 'tinteVerde' ? 'Tinte Verde' :
+                                         tipoVidrio === 'reflecta' ? 'Reflecta' : 'Ninguno';
+
+                let cotizacionTexto = `AJM Marcos\nCotización\nCliente: ${nombre}\nTipo de aluminio: ${descripcionAluminio}\nTipo de vidrio: ${descripcionVidrio}\nÍtems:\n`;
+                itemsValidos.forEach(item => {
+                    cotizacionTexto += `- ${item.descripcion}\n`;
+                    if (item.medidas) {
+                        cotizacionTexto += `  Medidas: ${item.medidas.ancho} m x ${item.medidas.alto} m\n`;
+                    }
+                    if (item.metrosCuadrados && (item.tipoTrabajo === 'ventana2' || item.tipoTrabajo === 'ventana3' || item.tipoTrabajo === 'canceleriaFija2' || item.tipoTrabajo === 'canceleriaFija3' || item.tipoTrabajo === 'cancelBano')) {
+                        cotizacionTexto += `  Metros cuadrados: ${item.metrosCuadrados.toFixed(2)} m²\n`;
+                    }
+                    cotizacionTexto += `  Cantidad: ${item.cantidad} piezas\n`;
+                    cotizacionTexto += `  Precio: $${item.precioItem.toFixed(2)} MXN\n`;
+                });
+                cotizacionTexto += `Precio total estimado: $${precioTotal.toFixed(2)} MXN\n\nTodo trabajo requiere 50% de anticipo.\nLa cotización tiene validez por 15 días.\nGracias por su preferencia.\nTeléfono: 9933915684`;
+
+                setCotizacion({
+                    texto: cotizacionTexto,
+                    descripcionAluminio,
+                    descripcionVidrio,
+                    tipoAluminio,
+                    items: itemsValidos,
+                    precioTotal
+                });
+
+                const doc = new jsPDF();
+                doc.setFillColor(245, 245, 220);
+                doc.rect(0, 0, doc.internal.pageSize.getWidth(), doc.internal.pageSize.getHeight(), 'F');
+                doc.setFillColor(25, 50, 100);
+                doc.rect(0, 0, doc.internal.pageSize.getWidth(), 30, 'F');
+                if (tipoAluminio === 'duranodizado' && itemsValidos.some(item => ['ventana2', 'ventana3', 'canceleriaFija2', 'canceleriaFija3'].includes(item.tipoTrabajo))) {
+                    try {
+                        doc.addImage(windowImage, 'WEBP', 140, 10, 50, 50);
+                    } catch (e) {
+                        console.error('Error al agregar la imagen:', e);
+                    }
+                }
+                doc.setFontSize(22);
+                doc.setTextColor(255, 255, 255);
+                doc.text('AJM Marcos', doc.internal.pageSize.getWidth() / 2, 20, { align: 'center' });
+                doc.setFontSize(16);
+                doc.setTextColor(0, 0, 0);
+                doc.text('Cotización', doc.internal.pageSize.getWidth() / 2, 40, { align: 'center' });
+                doc.setFontSize(12);
+                doc.setTextColor(50, 60, 70);
+                doc.text('Cliente:', 20, 55);
+                doc.text(nombre, 60, 55);
+                doc.text('Tipo de aluminio:', 20, 65);
+                doc.text(descripcionAluminio, 60, 65);
+                doc.text('Tipo de vidrio:', 20, 75);
+                doc.text(descripcionVidrio, 60, 75);
+                doc.text('Ítems:', 20, 85);
+                let yPos = 95;
+                itemsValidos.forEach(item => {
+                    doc.text(`- ${item.descripcion}`, 25, yPos);
+                    yPos += 5;
+                    if (item.medidas) {
+                        doc.text(`Medidas: ${item.medidas.ancho} m x ${item.medidas.alto} m`, 30, yPos);
+                        yPos += 5;
+                    }
+                    if (item.metrosCuadrados && (item.tipoTrabajo === 'ventana2' || item.tipoTrabajo === 'ventana3' || item.tipoTrabajo === 'canceleriaFija2' || item.tipoTrabajo === 'canceleriaFija3' || item.tipoTrabajo === 'cancelBano')) {
+                        doc.text(`Metros cuadrados: ${item.metrosCuadrados.toFixed(2)} m²`, 30, yPos);
+                        yPos += 5;
+                    }
+                    doc.text(`Cantidad: ${item.cantidad} piezas`, 30, yPos);
+                    yPos += 5;
+                    doc.text(`Precio: $${item.precioItem.toFixed(2)} MXN`, 30, yPos);
+                    yPos += 10;
+                });
+                yPos += 5;
+                doc.setDrawColor(25, 50, 100);
+                doc.line(20, yPos, 190, yPos);
+                yPos += 10;
+                itemsValidos.forEach(item => {
+                    if (item.tipoTrabajo !== 'canceleriaFija2' && item.tipoTrabajo !== 'canceleriaFija3' && item.tipoTrabajo !== 'cancelBano') {
+                        doc.setTextColor(80, 120, 80);
+                        doc.setFontSize(12);
+                        const unidadPrecio = item.tipoTrabajo === 'ventana2' || item.tipoTrabajo === 'ventana3' ? 'm²' : 'piezas';
+                        doc.text(`Precio unitario (${item.descripcion}):`, 20, yPos);
+                        doc.text(`$${item.precioUnitario.toFixed(2)} MXN/${unidadPrecio}`, 100, yPos);
+                        yPos += 7;
+                    }
+                });
+                yPos += 10;
+                doc.setFontSize(16);
+                doc.setFont("helvetica", "bold");
+                doc.text('Precio total estimado:', 20, yPos);
+                doc.text(`$${precioTotal.toFixed(2)} MXN`, 80, yPos);
+                doc.setFont("helvetica", "normal");
+                doc.setFontSize(10);
+                doc.setTextColor(50, 60, 70);
+                const footerY = doc.internal.pageSize.getHeight() - 40;
+                doc.text('Todo trabajo requiere 50% de anticipo.', 20, footerY);
+                doc.text('La cotización tiene validez por 15 días.', 20, footerY + 8);
+                doc.text('Gracias por su preferencia.', 20, footerY + 16);
+                doc.text('Teléfono: 9933915684', 20, footerY + 24);
+
+                const pdfBlob = doc.output('blob');
+                const url = URL.createObjectURL(pdfBlob);
+                setPdfUrl(url);
+            };
+
+            const guardarCotizacion = () => {
+                if (cotizacion && cotizacion.texto) {
+                    const blob = new Blob([cotizacion.texto], { type: 'text/plain' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'cotizacion.txt';
+                    a.click();
+                    URL.revokeObjectURL(url);
+                }
+            };
+
+            const generarPDF = () => {
+                console.log('Iniciando generarPDF...');
+                if (!cotizacion || !cotizacion.texto || !cotizacion.items || !cotizacion.tipoAluminio) {
+                    alert('Error: No hay una cotización válida. Por favor, calcula la cotización primero.');
+                    console.error('Cotización inválida:', cotizacion);
+                    return;
+                }
+
+                try {
+                    console.log('Creando nuevo jsPDF...');
+                    const doc = new jsPDF();
+                    doc.setFillColor(245, 245, 220);
+                    doc.rect(0, 0, doc.internal.pageSize.getWidth(), doc.internal.pageSize.getHeight(), 'F');
+                    doc.setFillColor(25, 50, 100);
+                    doc.rect(0, 0, doc.internal.pageSize.getWidth(), 30, 'F');
+                    if (cotizacion.tipoAluminio === 'duranodizado' && cotizacion.items.some(item => ['ventana2', 'ventana3', 'canceleriaFija2', 'canceleriaFija3'].includes(item.tipoTrabajo))) {
+                        console.log('Agregando imagen...');
+                        try {
+                            doc.addImage(windowImage, 'WEBP', 140, 10, 50, 50);
+                        } catch (e) {
+                            console.error('Error al agregar la imagen:', e);
+                        }
+                    }
+                    doc.setFontSize(22);
+                    doc.setTextColor(255, 255, 255);
+                    doc.text('AJM Marcos', doc.internal.pageSize.getWidth() / 2, 20, { align: 'center' });
+                    doc.setFontSize(16);
+                    doc.setTextColor(0, 0, 0);
+                    doc.text('Cotización', doc.internal.pageSize.getWidth() / 2, 40, { align: 'center' });
+                    doc.setFontSize(12);
+                    doc.setTextColor(50, 60, 70);
+                    doc.text('Cliente:', 20, 55);
+                    doc.text(nombre, 60, 55);
+                    doc.text('Tipo de aluminio:', 20, 65);
+                    doc.text(cotizacion.descripcionAluminio, 60, 65);
+                    doc.text('Tipo de vidrio:', 20, 75);
+                    doc.text(cotizacion.descripcionVidrio, 60, 75);
+                    doc.text('Ítems:', 20, 85);
+                    let yPos = 95;
+                    cotizacion.items.forEach(item => {
+                        doc.text(`- ${item.descripcion}`, 25, yPos);
+                        yPos += 5;
+                        if (item.medidas) {
+                            doc.text(`Medidas: ${item.medidas.ancho} m x ${item.medidas.alto} m`, 30, yPos);
+                            yPos += 5;
+                        }
+                        doc.text(`Cantidad: ${item.cantidad} piezas`, 30, yPos);
+                        yPos += 5;
+                        doc.text(`Precio: $${item.precioItem.toFixed(2)} MXN`, 30, yPos);
+                        yPos += 10;
+                    });
+                    yPos += 5;
+                    doc.setDrawColor(25, 50, 100);
+                    doc.line(20, yPos, 190, yPos);
+                    yPos += 15;
+                    cotizacion.items.forEach(item => {
+                        if (item.tipoTrabajo !== 'canceleriaFija2' && item.tipoTrabajo !== 'canceleriaFija3' && item.tipoTrabajo !== 'cancelBano') {
+                            doc.setTextColor(80, 120, 80);
+                            doc.setFontSize(12);
+                            const unidadPrecio = item.tipoTrabajo === 'ventana2' || item.tipoTrabajo === 'ventana3' ? 'm²' : 'piezas';
+                            doc.text(`Precio unitario (${item.descripcion}):`, 20, yPos);
+                            doc.text(`$${item.precioUnitario.toFixed(2)} MXN/${unidadPrecio}`, 100, yPos);
+                            yPos += 7;
+                        }
+                    });
+                    yPos += 10;
+                    doc.setFontSize(16);
+                    doc.setFont("helvetica", "bold");
+                    doc.text('Precio total estimado:', 20, yPos);
+                    doc.text(`$${cotizacion.precioTotal.toFixed(2)} MXN`, 80, yPos);
+                    doc.setFont("helvetica", "normal");
+                    doc.setFontSize(10);
+                    doc.setTextColor(50, 60, 70);
+                    const footerY = doc.internal.pageSize.getHeight() - 40;
+                    doc.text('Todo trabajo requiere 50% de anticipo.', 20, footerY);
+                    doc.text('La cotización tiene validez por 15 días.', 20, footerY + 8);
+                    doc.text('Gracias por su preferencia.', 20, footerY + 16);
+                    doc.text('Teléfono: 9933915684', 20, footerY + 24);
+
+                    console.log('Generando blob...');
+                    const pdfBlob = doc.output('blob');
+                    console.log('Creando URL...');
+                    const url = URL.createObjectURL(pdfBlob);
+                    console.log('Creando enlace de descarga...');
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'cotizacion.pdf';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    console.log('Descarga iniciada.');
+                    alert('El PDF se ha descargado. Busca "cotizacion.pdf" en tu carpeta de descargas o comparte desde tu dispositivo.');
+                } catch (error) {
+                    console.error('Error al generar el PDF:', error);
+                    alert('Error al generar el PDF: ' + error.message);
+                }
+            };
+
+            const vistaPreviaPDF = () => {
+                console.log('Iniciando vistaPreviaPDF...');
+                if (!cotizacion || !cotizacion.texto) {
+                    alert('Error: No hay una cotización válida. Por favor, calcula la cotización primero.');
+                    return;
+                }
+
+                try {
+                    const doc = new jsPDF();
+                    doc.setFillColor(245, 245, 220);
+                    doc.rect(0, 0, doc.internal.pageSize.getWidth(), doc.internal.pageSize.getHeight(), 'F');
+                    doc.setFillColor(25, 50, 100);
+                    doc.rect(0, 0, doc.internal.pageSize.getWidth(), 30, 'F');
+                    if (cotizacion.tipoAluminio === 'duranodizado' && cotizacion.items.some(item => ['ventana2', 'ventana3', 'canceleriaFija2', 'canceleriaFija3'].includes(item.tipoTrabajo))) {
+                        try {
+                            doc.addImage(windowImage, 'WEBP', 140, 10, 50, 50);
+                        } catch (e) {
+                            console.error('Error al agregar la imagen:', e);
+                        }
+                    }
+                    doc.setFontSize(22);
+                    doc.setTextColor(255, 255, 255);
+                    doc.text('AJM Marcos', doc.internal.pageSize.getWidth() / 2, 20, { align: 'center' });
+                    doc.setFontSize(16);
+                    doc.setTextColor(0, 0, 0);
+                    doc.text('Cotización', doc.internal.pageSize.getWidth() / 2, 40, { align: 'center' });
+                    doc.setFontSize(12);
+                    doc.setTextColor(50, 60, 70);
+                    doc.text('Cliente:', 20, 55);
+                    doc.text(nombre, 60, 55);
+                    doc.text('Tipo de aluminio:', 20, 65);
+                    doc.text(cotizacion.descripcionAluminio, 60, 65);
+                    doc.text('Tipo de vidrio:', 20, 75);
+                    doc.text(cotizacion.descripcionVidrio, 60, 75);
+                    doc.text('Ítems:', 20, 85);
+                    let yPos = 95;
+                    cotizacion.items.forEach(item => {
+                        doc.text(`- ${item.descripcion}`, 25, yPos);
+                        yPos += 5;
+                        if (item.medidas) {
+                            doc.text(`Medidas: ${item.medidas.ancho} m x ${item.medidas.alto} m`, 30, yPos);
+                            yPos += 5;
+                        }
+                        doc.text(`Cantidad: ${item.cantidad} piezas`, 30, yPos);
+                        yPos += 5;
+                        doc.text(`Precio: $${item.precioItem.toFixed(2)} MXN`, 30, yPos);
+                        yPos += 10;
+                    });
+                    yPos += 5;
+                    doc.setDrawColor(25, 50, 100);
+                    doc.line(20, yPos, 190, yPos);
+                    yPos += 10;
+                    cotizacion.items.forEach(item => {
+                        if (item.tipoTrabajo !== 'canceleriaFija2' && item.tipoTrabajo !== 'canceleriaFija3' && item.tipoTrabajo !== 'cancelBano') {
+                            doc.setTextColor(80, 120, 80);
+                            doc.setFontSize(12);
+                            const unidadPrecio = item.tipoTrabajo === 'ventana2' || item.tipoTrabajo === 'ventana3' ? 'm²' : 'piezas';
+                            doc.text(`Precio unitario (${item.descripcion}):`, 20, yPos);
+                            doc.text(`$${item.precioUnitario.toFixed(2)} MXN/${unidadPrecio}`, 100, yPos);
+                            yPos += 7;
+                        }
+                    });
+                    yPos += 10;
+                    doc.setFontSize(16);
+                    doc.setFont("helvetica", "bold");
+                    doc.text('Precio total estimado:', 20, yPos);
+                    doc.text(`$${cotizacion.precioTotal.toFixed(2)} MXN`, 80, yPos);
+                    doc.setFont("helvetica", "normal");
+                    doc.setFontSize(10);
+                    doc.setTextColor(50, 60, 70);
+                    const footerY = doc.internal.pageSize.getHeight() - 40;
+                    doc.text('Todo trabajo requiere 50% de anticipo.', 20, footerY);
+                    doc.text('La cotización tiene validez por 15 días.', 20, footerY + 8);
+                    doc.text('Gracias por su preferencia.', 20, footerY + 16);
+                    doc.text('Teléfono: 9933915684', 20, footerY + 24);
+
+                    const pdfBlob = doc.output('blob');
+                    const url = URL.createObjectURL(pdfBlob);
+                    setPdfUrl(url);
+                    alert('La vista preliminar está lista. Desplázate hacia abajo para verla en la aplicación.');
+                } catch (error) {
+                    console.error('Error al generar la vista previa:', error);
+                    alert('Error al generar la vista previa: ' + error.message);
+                }
+            };
+
+            return React.createElement(
+                'div',
+                { className: 'min-h-screen bg-gray-100 flex items-center justify-center p-4' },
+                React.createElement(
+                    'div',
+                    { className: 'bg-white p-6 rounded-lg shadow-lg w-full max-w-lg' },
+                    React.createElement('h2', { className: 'text-2xl font-bold mb-4 text-center' }, 'AJM Marcos - Cotizador de Aluminio'),
+
+                    React.createElement(
+                        'div',
+                        { className: 'mb-4' },
+                        React.createElement('label', { className: 'block font-bold mb-2', htmlFor: 'nombre' }, 'Nombre del Cliente:'),
+                        React.createElement('input', {
+                            type: 'text',
+                            id: 'nombre',
+                            value: nombre,
+                            onChange: (e) => setNombre(e.target.value),
+                            placeholder: 'Ingrese el nombre',
+                            className: 'w-full p-2 border rounded'
+                        })
+                    ),
+
+                    React.createElement(
+                        'div',
+                        { className: 'mb-4' },
+                        React.createElement('label', { className: 'block font-bold mb-2', htmlFor: 'tipoAluminio' }, 'Tipo de Aluminio:'),
+                        React.createElement(
+                            'select',
+                            {
+                                id: 'tipoAluminio',
+                                value: tipoAluminio,
+                                onChange: (e) => setTipoAluminio(e.target.value),
+                                className: 'w-full p-2 border rounded'
+                            },
+                            React.createElement('option', { value: '' }, 'Seleccione un tipo'),
+                            React.createElement('option', { value: 'natural' }, 'Natural'),
+                            React.createElement('option', { value: 'duranodizado' }, 'Duranodizado'),
+                            React.createElement('option', { value: 'blanco' }, 'Blanco'),
+                            React.createElement('option', { value: 'aluminioPulido' }, 'Aluminio Pulido'),
+                            React.createElement('option', { value: 'champagne' }, 'Champagne'),
+                            React.createElement('option', { value: 'ninguno' }, 'Ninguno')
+                        )
+                    ),
+
+                    React.createElement(
+                        'div',
+                        { className: 'mb-4' },
+                        React.createElement('label', { className: 'block font-bold mb-2', htmlFor: 'tipoVidrio' }, 'Tipo de Vidrio:'),
+                        React.createElement(
+                            'select',
+                            {
+                                id: 'tipoVidrio',
+                                value: tipoVidrio,
+                                onChange: (e) => setTipoVidrio(e.target.value),
+                                className: 'w-full p-2 border rounded'
+                            },
+                            React.createElement('option', { value: '' }, 'Seleccione un tipo'),
+                            React.createElement('option', { value: 'claro' }, 'Claro'),
+                            React.createElement('option', { value: 'filtrasol' }, 'Filtrasol'),
+                            React.createElement('option', { value: 'tinteVerde' }, 'Tinte Verde'),
+                            React.createElement('option', { value: 'reflecta' }, 'Reflecta'),
+                            React.createElement('option', { value: 'ninguno' }, 'Ninguno')
+                        )
+                    ),
+
+                    React.createElement(
+                        'div',
+                        { className: 'mb-4' },
+                        React.createElement('h3', { className: 'text-lg font-bold mb-2' }, 'Ítems'),
+                        items.map(item => React.createElement(
+                            'div',
+                            { key: item.id, className: 'mb-4 p-4 border rounded' },
+                            React.createElement(
+                                'div',
+                                { className: 'mb-2' },
+                                React.createElement('label', { className: 'block font-bold mb-1', htmlFor: `tipoTrabajo-${item.id}` }, 'Tipo de Trabajo:'),
+                                React.createElement(
+                                    'select',
+                                    {
+                                        id: `tipoTrabajo-${item.id}`,
+                                        value: item.tipoTrabajo,
+                                        onChange: (e) => actualizarItem(item.id, 'tipoTrabajo', e.target.value),
+                                        className: 'w-full p-2 border rounded'
+                                    },
+                                    React.createElement('option', { value: '' }, 'Seleccione un tipo'),
+                                    React.createElement('option', { value: 'ventana2' }, 'Ventana de 2 pulgadas'),
+                                    React.createElement('option', { value: 'ventana3' }, 'Ventana de 3 pulgadas'),
+                                    React.createElement('option', { value: 'canceleriaFija2' }, 'Cancelería Fija de 2 pulgadas'),
+                                    React.createElement('option', { value: 'canceleriaFija3' }, 'Cancelería Fija de 3 pulgadas'),
+                                    React.createElement('option', { value: 'puertaLigera' }, 'Puerta Ligera'),
+                                    React.createElement('option', { value: 'puertaReforzada' }, 'Puerta Reforzada'),
+                                    React.createElement('option', { value: 'cancelBano' }, 'Cancel de Baño')
+                                )
+                            ),
+                            React.createElement(
+                                'div',
+                                { className: 'mb-2' },
+                                React.createElement('label', { className: 'block font-bold mb-1' }, 'Medidas (ancho x alto en metros):'),
+                                React.createElement(
+                                    'div',
+                                    { className: 'flex space-x-2' },
+                                    React.createElement('input', {
+                                        type: 'number',
+                                        value: item.ancho,
+                                        onChange: (e) => actualizarItem(item.id, 'ancho', e.target.value),
+                                        min: '0',
+                                        step: '0.1',
+                                        placeholder: 'Ancho',
+                                        className: 'w-1/2 p-2 border rounded',
+                                        disabled: item.tipoTrabajo === 'puertaLigera' || item.tipoTrabajo === 'puertaReforzada'
+                                    }),
+                                    React.createElement('input', {
+                                        type: 'number',
+                                        value: item.alto,
+                                        onChange: (e) => actualizarItem(item.id, 'alto', e.target.value),
+                                        min: '0',
+                                        step: '0.1',
+                                        placeholder: 'Alto',
+                                        className: 'w-1/2 p-2 border rounded',
+                                        disabled: item.tipoTrabajo === 'puertaLigera' || item.tipoTrabajo === 'puertaReforzada'
+                                    })
+                                )
+                            ),
+                            React.createElement(
+                                'div',
+                                { className: 'mb-2' },
+                                React.createElement('label', { className: 'block font-bold mb-1', htmlFor: `cantidad-${item.id}` }, 'Cantidad:'),
+                                React.createElement('input', {
+                                    type: 'number',
+                                    id: `cantidad-${item.id}`,
+                                    value: item.cantidad,
+                                    onChange: (e) => actualizarItem(item.id, 'cantidad', e.target.value),
+                                    min: '1',
+                                    step: '1',
+                                    placeholder: 'Cantidad',
+                                    className: 'w-full p-2 border rounded'
+                                })
+                            ),
+                            React.createElement(
+                                'button',
+                                {
+                                    onClick: () => eliminarItem(item.id),
+                                    className: `w-full p-2 rounded text-white ${items.length > 1 ? 'bg-red-500 hover:bg-red-600' : 'bg-gray-400 cursor-not-allowed'}`,
+                                    disabled: items.length <= 1
+                                },
+                                'Eliminar Ítem'
+                            )
+                        ))
+                    ),
+
+                    React.createElement(
+                        'button',
+                        { onClick: agregarItem, className: 'w-full bg-blue-500 text-white p-2 rounded hover:bg-blue-600 mb-4' },
+                        'Agregar Ítem'
+                    ),
+
+                    React.createElement(
+                        'button',
+                        { onClick: () => setEditandoPrecios(true), className: 'w-full bg-yellow-500 text-white p-2 rounded hover:bg-yellow-600 mb-4' },
+                        'Modificar Precios Base'
+                    ),
+
+                    editandoPrecios && React.createElement(
+                        'div',
+                        { className: 'mb-4 p-4 border rounded bg-gray-50' },
+                        React.createElement('h3', { className: 'text-lg font-bold mb-2' }, 'Editar Precios Base (MXN)'),
+                        React.createElement(
+                            'div',
+                            { className: 'mb-2' },
+                            React.createElement('label', { className: 'block font-bold', htmlFor: 'precioVentana2' }, 'Ventana de 2 pulgadas (por m²):'),
+                            React.createElement('input', {
+                                type: 'number',
+                                id: 'precioVentana2',
+                                defaultValue: preciosBase.ventana2,
+                                min: '0',
+                                step: '1',
+                                className: 'w-full p-2 border rounded'
+                            })
+                        ),
+                        React.createElement(
+                            'div',
+                            { className: 'mb-2' },
+                            React.createElement('label', { className: 'block font-bold', htmlFor: 'precioVentana3' }, 'Ventana de 3 pulgadas (por m²):'),
+                            React.createElement('input', {
+                                type: 'number',
+                                id: 'precioVentana3',
+                                defaultValue: preciosBase.ventana3,
+                                min: '0',
+                                step: '1',
+                                className: 'w-full p-2 border rounded'
+                            })
+                        ),
+                        React.createElement(
+                            'div',
+                            { className: 'mb-2' },
+                            React.createElement('label', { className: 'block font-bold', htmlFor: 'precioCanceleriaFija2' }, 'Cancelería Fija de 2 pulgadas (por m²):'),
+                            React.createElement('input', {
+                                type: 'number',
+                                id: 'precioCanceleriaFija2',
+                                defaultValue: preciosBase.canceleriaFija2,
+                                min: '0',
+                                step: '1',
+                                className: 'w-full p-2 border rounded'
+                            })
+                        ),
+                        React.createElement(
+                            'div',
+                            { className: 'mb-2' },
+                            React.createElement('label', { className: 'block font-bold', htmlFor: 'precioCanceleriaFija3' }, 'Cancelería Fija de 3 pulgadas (por m²):'),
+                            React.createElement('input', {
+                                type: 'number',
+                                id: 'precioCanceleriaFija3',
+                                defaultValue: preciosBase.canceleriaFija3,
+                                min: '0',
+                                step: '1',
+                                className: 'w-full p-2 border rounded'
+                            })
+                        ),
+                        React.createElement(
+                            'div',
+                            { className: 'mb-2' },
+                            React.createElement('label', { className: 'block font-bold', htmlFor: 'precioPuertaLigera' }, 'Puerta Ligera (por pieza):'),
+                            React.createElement('input', {
+                                type: 'number',
+                                id: 'precioPuertaLigera',
+                                defaultValue: preciosBase.puertaLigera,
+                                min: '0',
+                                step: '1',
+                                className: 'w-full p-2 border rounded'
+                            })
+                        ),
+                        React.createElement(
+                            'div',
+                            { className: 'mb-2' },
+                            React.createElement('label', { className: 'block font-bold', htmlFor: 'precioPuertaReforzada' }, 'Puerta Reforzada (por pieza):'),
+                            React.createElement('input', {
+                                type: 'number',
+                                id: 'precioPuertaReforzada',
+                                defaultValue: preciosBase.puertaReforzada,
+                                min: '0',
+                                step: '1',
+                                className: 'w-full p-2 border rounded'
+                            })
+                        ),
+                        React.createElement(
+                            'div',
+                            { className: 'mb-2' },
+                            React.createElement('label', { className: 'block font-bold', htmlFor: 'precioCancelBano' }, 'Cancel de Baño (por m²):'),
+                            React.createElement('input', {
+                                type: 'number',
+                                id: 'precioCancelBano',
+                                defaultValue: preciosBase.cancelBano,
+                                min: '0',
+                                step: '1',
+                                className: 'w-full p-2 border rounded'
+                            })
+                        ),
+                        React.createElement(
+                            'div',
+                            { className: 'flex space-x-2' },
+                            React.createElement(
+                                'button',
+                                { onClick: actualizarPrecios, className: 'flex-1 bg-green-500 text-white p-2 rounded hover:bg-green-600' },
+                                'Guardar Precios'
+                            ),
+                            React.createElement(
+                                'button',
+                                { onClick: () => setEditandoPrecios(false), className: 'flex-1 bg-red-500 text-white p-2 rounded hover:bg-red-600' },
+                                'Cancelar'
+                            )
+                        )
+                    ),
+
+                    React.createElement(
+                        'button',
+                        { onClick: calcularCotizacion, className: 'w-full bg-green-500 text-white p-2 rounded hover:bg-green-600' },
+                        'Calcular Cotización'
+                    ),
+
+                    cotizacion && React.createElement(
+                        'div',
+                        { className: 'mt-6 p-4 border rounded' },
+                        cotizacion.error ? 
+                            React.createElement('p', { className: 'text-red-500' }, cotizacion.error) :
+                            React.createElement(
+                                React.Fragment,
+                                null,
+                                React.createElement('h3', { className: 'text-lg font-bold' }, 'Cotización'),
+                                React.createElement('p', null, 'Cliente: ', nombre),
+                                React.createElement('p', null, 'Tipo de aluminio: ', cotizacion.descripcionAluminio),
+                                React.createElement('p', null, 'Tipo de vidrio: ', cotizacion.descripcionVidrio),
+                                React.createElement('p', { className: 'font-bold mt-2' }, 'Ítems:'),
+                                cotizacion.items.map(item => {
+                                    const esVentana = item.tipoTrabajo === 'ventana2' || item.tipoTrabajo === 'ventana3' || item.tipoTrabajo === 'canceleriaFija2' || item.tipoTrabajo === 'canceleriaFija3' || item.tipoTrabajo === 'cancelBano';
+                                    return React.createElement(
+                                        React.Fragment,
+                                        { key: item.tipoTrabajo + item.ancho + item.alto },
+                                        React.createElement('p', null, `- ${item.descripcion}`),
+                                        item.medidas && React.createElement('p', { className: 'ml-2' }, `Medidas: ${item.medidas.ancho} m x ${item.medidas.alto} m`),
+                                        item.metrosCuadrados && esVentana && React.createElement('p', { className: 'ml-2' }, `Metros cuadrados: ${item.metrosCuadrados.toFixed(2)} m²`),
+                                        React.createElement('p', { className: 'ml-2' }, `Cantidad: ${item.cantidad} piezas`),
+                                        React.createElement('p', { className: 'ml-2' }, `Precio: $${item.precioItem.toFixed(2)} MXN`)
+                                    );
+                                }),
+                                cotizacion.items.map(item => {
+                                    const unidadPrecio = item.tipoTrabajo === 'puertaLigera' || item.tipoTrabajo === 'puertaReforzada' ? 'piezas' : 'm²';
+                                    return React.createElement(
+                                        'p',
+                                        { key: item.tipoTrabajo + 'unitario', className: 'ml-2' },
+                                        `Precio unitario (${item.descripcion}): $${item.precioUnitario.toFixed(2)} MXN/${unidadPrecio}`
+                                    );
+                                }),
+                                React.createElement('p', { className: 'mt-2' }, 'Precio total estimado: $', cotizacion.precioTotal.toFixed(2), ' MXN'),
+                                pdfUrl && React.createElement(
+                                    'div',
+                                    { className: 'mt-4' },
+                                    React.createElement('h4', { className: 'text-md font-semibold mb-2' }, 'Vista Preliminar del PDF:'),
+                                    React.createElement('iframe', {
+                                        src: pdfUrl,
+                                        className: 'w-full h-96 border', // Aumenté la altura para mejor visibilidad
+                                        title: 'Vista Preliminar del PDF'
+                                    })
+                                ),
+                                React.createElement(
+                                    'div',
+                                    { className: 'mt-4 flex flex-col space-y-2' },
+                                    React.createElement(
+                                        'button',
+                                        { onClick: guardarCotizacion, className: 'bg-blue-500 text-white p-2 rounded hover:bg-blue-600' },
+                                        'Guardar Cotización'
+                                    ),
+                                    React.createElement(
+                                        'button',
+                                        { onClick: generarPDF, className: 'bg-green-600 text-white p-2 rounded hover:bg-green-700' },
+                                        'Descargar PDF (WhatsApp)'
+                                    ),
+                                    React.createElement(
+                                        'button',
+                                        { onClick: vistaPreviaPDF, className: 'bg-orange-500 text-white p-2 rounded hover:bg-orange-600' },
+                                        'Mostrar Vista Preliminar'
+                                    )
+                                )
+                            )
+                    )
+                )
+            );
+        }
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(React.createElement(App));
+    </script>
+</body>
+</html>
